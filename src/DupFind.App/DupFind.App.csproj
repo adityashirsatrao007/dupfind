@@ -9,6 +9,10 @@
     <AssemblyName>DupFind</AssemblyName>
     <RootNamespace>DupFind.App</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>assets\app.ico</ApplicationIcon>
+    <Version>1.1.0</Version>
+    <Product>DupFind</Product>
+    <Description>Duplicate file finder for Windows with size-first SHA-256 detection.</Description>
   </PropertyGroup>
 
   <!-- Lets contributors on Linux/macOS restore and compile the solution. No effect on Windows. -->
