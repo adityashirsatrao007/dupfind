@@ -66,6 +66,10 @@
             <Button Content="Export CSV…"
                     Command="{Binding ExportCsvCommand}"
                     Padding="12,6" Margin="6,0,0,0" />
+            <Button Content="Skipped files…"
+                    Command="{Binding ShowSkippedCommand}"
+                    Padding="12,6" Margin="6,0,0,0"
+                    ToolTip="Files and folders the scan could not read." />
         </StackPanel>
 
         <!-- Progress -->
