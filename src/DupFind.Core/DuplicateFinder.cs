@@ -4,9 +4,16 @@ using System.Security.Cryptography;
 namespace DupFind.Core;
 
 /// <summary>
-/// Finds byte-identical files. Two passes: group by exact size, then hash only the
-/// candidates that share a size. Hashing every file would be far slower on a real disk.
+/// Finds byte-identical files. Three passes, none of which is expensive:
+/// a size histogram, a second walk that keeps only files whose size is shared,
+/// then SHA-256 over those candidates only.
 /// </summary>
+/// <remarks>
+/// Two directory walks instead of one is a deliberate trade: the second walk costs
+/// metadata reads (cheap, and usually cached by the OS), and in exchange memory stays
+/// proportional to the number of duplicates rather than to the number of files on disk.
+/// On a million-file volume the single-pass version held every path in memory.
+/// </remarks>
 public sealed class DuplicateFinder
 {
     private readonly int _parallelism;
@@ -20,15 +27,13 @@ public sealed class DuplicateFinder
         IProgress<ScanProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        // Windows paths are case-insensitive; overlapping roots must not double-count a file.
-        var pathComparer = OperatingSystem.IsWindows()
-            ? StringComparer.OrdinalIgnoreCase
-            : StringComparer.Ordinal;
-
+        var rootList = roots.ToList();
         var errors = new ConcurrentBag<string>();
-        var sizes = new Dictionary<string, long>(pathComparer);
 
-        foreach (var root in roots)
+        // Pass 1: how many files share each exact size? Only the histogram is retained.
+        var sizeCounts = new Dictionary<long, int>();
+
+        foreach (var root in rootList)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -38,27 +43,39 @@ public sealed class DuplicateFinder
                 continue;
             }
 
-            foreach (var path in EnumerateFiles(root, errors))
+            foreach (var (_, size) in Enumerate(root, errors))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                try
-                {
-                    sizes.TryAdd(path, new FileInfo(path).Length);
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    errors.Add($"{path}: {ex.Message}");
-                }
+                sizeCounts[size] = sizeCounts.GetValueOrDefault(size) + 1;
             }
         }
 
-        // Zero-byte files are trivially "identical" and never worth deleting.
-        var candidates = sizes
-            .Where(f => f.Value > 0)
-            .GroupBy(f => f.Value)
-            .Where(g => g.Count() > 1)
-            .SelectMany(g => g.Select(f => (Size: g.Key, f.Key)))
-            .ToList();
+        // Pass 2: collect paths whose size is shared by at least one other file.
+        // Windows paths are case-insensitive, and overlapping roots must not double-count.
+        var pathComparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+
+        var seen = new HashSet<string>(pathComparer);
+        var candidates = new List<(long Size, string Path)>();
+
+        foreach (var root in rootList)
+        {
+            if (!Directory.Exists(root))
+                continue;
+
+            foreach (var (path, size) in Enumerate(root, errors))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // Zero-byte files are trivially "identical" and never worth deleting.
+                if (size == 0 || sizeCounts.GetValueOrDefault(size) < 2)
+                    continue;
+
+                if (seen.Add(path))
+                    candidates.Add((size, path));
+            }
+        }
 
         var hashed = new ConcurrentBag<(long Size, string Hash, string Path)>();
         var examined = 0;
@@ -74,17 +91,17 @@ public sealed class DuplicateFinder
             {
                 try
                 {
-                    var hash = await HashFileAsync(candidate.Key, ct).ConfigureAwait(false);
-                    hashed.Add((candidate.Size, hash, candidate.Key));
+                    var hash = await HashFileAsync(candidate.Path, ct).ConfigureAwait(false);
+                    hashed.Add((candidate.Size, hash, candidate.Path));
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
-                    errors.Add($"{candidate.Key}: {ex.Message}");
+                    errors.Add($"{candidate.Path}: {ex.Message}");
                 }
 
                 var done = Interlocked.Increment(ref examined);
                 if (done % 25 == 0 || done == candidates.Count)
-                    progress?.Report(new ScanProgress(candidate.Key, done, candidates.Count));
+                    progress?.Report(new ScanProgress(candidate.Path, done, candidates.Count));
             }).ConfigureAwait(false);
 
         var groups = hashed
@@ -99,12 +116,15 @@ public sealed class DuplicateFinder
             .OrderByDescending(g => g.Size * (g.Paths.Count - 1))
             .ToList();
 
-        return new ScanResult(groups, errors.ToList());
+        return new ScanResult(groups, errors.Distinct().ToList());
     }
 
-    private static List<string> EnumerateFiles(string root, ConcurrentBag<string> errors)
+    /// <summary>
+    /// Walks a root lazily. Enumeration can fail part-way through (a drive unplugged, a
+    /// folder deleted mid-scan), so each step is guarded and whatever was already found is kept.
+    /// </summary>
+    private static IEnumerable<(string Path, long Size)> Enumerate(string root, ConcurrentBag<string> errors)
     {
-        var paths = new List<string>();
         var options = new EnumerationOptions
         {
             RecurseSubdirectories = true,
@@ -113,17 +133,37 @@ public sealed class DuplicateFinder
             AttributesToSkip = FileAttributes.ReparsePoint,
         };
 
-        try
-        {
-            paths.AddRange(Directory.EnumerateFiles(root, "*", options));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // Mid-walk failure (e.g. a drive unplugged) keeps what was already found.
-            errors.Add($"{root}: {ex.Message}");
-        }
+        using var enumerator = Directory.EnumerateFiles(root, "*", options).GetEnumerator();
 
-        return paths;
+        while (true)
+        {
+            string current;
+            try
+            {
+                if (!enumerator.MoveNext())
+                    yield break;
+
+                current = enumerator.Current;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                errors.Add($"{root}: {ex.Message}");
+                yield break;
+            }
+
+            long size;
+            try
+            {
+                size = new FileInfo(current).Length;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                errors.Add($"{current}: {ex.Message}");
+                continue;
+            }
+
+            yield return (current, size);
+        }
     }
 
     private static async Task<string> HashFileAsync(string path, CancellationToken cancellationToken)
