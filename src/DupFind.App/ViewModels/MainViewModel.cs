@@ -6,6 +6,7 @@ using System.Windows;
 using DupFind.App.Mvvm;
 using DupFind.App.Services;
 using DupFind.Core;
+using DupFind.ViewModels;
 using Microsoft.Win32;
 
 namespace DupFind.App.ViewModels;
@@ -30,7 +31,17 @@ public sealed class MainViewModel : ObservableObject
 
     public ObservableCollection<string> Folders { get; } = [];
 
-    public ObservableCollection<DuplicateGroupViewModel> Groups { get; } = [];
+    private ObservableCollection<DuplicateGroupViewModel> _groups = [];
+
+    /// <summary>
+    /// Assigned once per scan rather than appended to. Adding 20 000 groups one at a time
+    /// raised 20 000 collection-changed events, and the view rebuilt its layout after each.
+    /// </summary>
+    public ObservableCollection<DuplicateGroupViewModel> Groups
+    {
+        get => _groups;
+        private set => SetProperty(ref _groups, value);
+    }
 
     /// <summary>Files and folders the scan could not read, so the user can act on them.</summary>
     public ObservableCollection<string> SkippedFiles { get; } = [];
@@ -151,12 +162,18 @@ public sealed class MainViewModel : ObservableObject
         {
             var result = await _finder.FindAsync(Folders.ToList(), progress, _cancellation.Token);
 
+            // Built detached, then published in one assignment: the view binds to the old
+            // collection until the scan finishes, so it lays out once instead of per group.
+            var groups = new List<DuplicateGroupViewModel>(result.Groups.Count);
+
             foreach (var group in result.Groups)
             {
                 var vm = new DuplicateGroupViewModel(group);
                 vm.SelectionChanged += OnGroupSelectionChanged;
-                Groups.Add(vm);
+                groups.Add(vm);
             }
+
+            Groups = new ObservableCollection<DuplicateGroupViewModel>(groups);
 
             foreach (var error in result.Errors)
                 SkippedFiles.Add(error);

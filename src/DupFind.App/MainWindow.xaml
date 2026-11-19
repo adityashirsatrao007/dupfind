@@ -89,50 +89,79 @@
                        Opacity="0.75" />
         </DockPanel>
 
-        <!-- Results -->
-        <Border Grid.Row="4" BorderBrush="#DDDDDD" BorderThickness="1" CornerRadius="3">
-            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="10">
-                <ItemsControl ItemsSource="{Binding Groups}">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <Expander Margin="0,0,0,4"
-                                      Header="{Binding Header}"
-                                      IsExpanded="True">
-                                <ItemsControl ItemsSource="{Binding Files}" Margin="24,4,0,8">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid Margin="0,2">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto" />
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
+        <!--
+            Results. This is a ListBox rather than an ItemsControl inside a ScrollViewer,
+            because only a virtualizing panel recycles containers. The old markup built one
+            TextBlock and one CheckBox per file — 200 000 controls for a 100 000-file scan —
+            and the window stopped responding while it laid them out.
+        -->
+        <Border Grid.Row="4" BorderBrush="#DDDDDD" BorderThickness="1" CornerRadius="3" Padding="10">
+            <ListBox ItemsSource="{Binding Groups}"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     HorizontalContentAlignment="Stretch"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling">
+                <ListBox.ItemContainerStyle>
+                    <!-- Ticking is done with checkboxes, so the row container carries no
+                         chrome and no selection highlight of its own. -->
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Padding" Value="0" />
+                        <Setter Property="Margin" Value="0" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ListBoxItem">
+                                    <ContentPresenter />
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </ListBox.ItemContainerStyle>
 
-                                                <CheckBox Grid.Column="0"
-                                                          IsChecked="{Binding IsSelected, Mode=TwoWay}"
-                                                          VerticalAlignment="Center"
-                                                          Margin="0,0,8,0" />
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Expander Margin="0,0,0,4"
+                                  Header="{Binding Header}"
+                                  IsExpanded="True">
+                            <!-- shortcut: a single group holding thousands of copies is not
+                                 virtualized at this level; upgrade to a grouped
+                                 CollectionView with IsVirtualizingWhenGrouping if that shows up. -->
+                            <ItemsControl ItemsSource="{Binding Files}" Margin="24,4,0,8">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,2">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
 
-                                                <TextBlock Grid.Column="1"
-                                                           Text="{Binding Path}"
-                                                           ToolTip="{Binding Path}"
-                                                           TextTrimming="CharacterEllipsis"
-                                                           VerticalAlignment="Center" />
+                                            <CheckBox Grid.Column="0"
+                                                      IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                      AutomationProperties.Name="{Binding FileName}"
+                                                      VerticalAlignment="Center"
+                                                      Margin="0,0,8,0" />
 
-                                                <TextBlock Grid.Column="2"
-                                                           Text="{Binding LastModified}"
-                                                           Opacity="0.6"
-                                                           Margin="12,0,0,0"
-                                                           VerticalAlignment="Center" />
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </Expander>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </ScrollViewer>
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding Path}"
+                                                       ToolTip="{Binding Path}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       VerticalAlignment="Center" />
+
+                                            <TextBlock Grid.Column="2"
+                                                       Text="{Binding LastModified}"
+                                                       Opacity="0.6"
+                                                       Margin="12,0,0,0"
+                                                       VerticalAlignment="Center" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Expander>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
         </Border>
 
         <!-- Status bar -->
