@@ -11,6 +11,11 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
+  <!-- Lets contributors on Linux/macOS restore and compile the solution. No effect on Windows. -->
+  <PropertyGroup Condition="'$(OS)' != 'Windows_NT'">
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\DupFind.Core\DupFind.Core.csproj" />
   </ItemGroup>
