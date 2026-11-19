@@ -145,7 +145,10 @@ public sealed class DuplicateFinderTests : IDisposable
 
     private string Write(string relativePath, string content)
     {
-        var path = Path.Combine(_root, relativePath);
+        // Relative paths are written with '/' so the tests read the same on every OS;
+        // the platform separator is restored here so Path comparisons against the
+        // enumerator's output hold on Windows too.
+        var path = Path.Combine(_root, relativePath.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, content);
         return path;
