@@ -10,7 +10,7 @@
     <RootNamespace>DupFind.App</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>assets\app.ico</ApplicationIcon>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Product>DupFind</Product>
     <Description>Duplicate file finder for Windows with size-first SHA-256 detection.</Description>
   </PropertyGroup>
@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DupFind.Core\DupFind.Core.csproj" />
+    <ProjectReference Include="..\DupFind.ViewModels\DupFind.ViewModels.csproj" />
   </ItemGroup>
 
 </Project>

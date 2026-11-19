@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
-namespace DupFind.App.Mvvm;
+namespace DupFind.ViewModels;
 
 /// <summary>
 /// Minimal INotifyPropertyChanged base. Deliberately no MVVM framework: the pattern is

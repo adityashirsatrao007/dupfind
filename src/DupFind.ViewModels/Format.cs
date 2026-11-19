@@ -1,6 +1,6 @@
 using System.Globalization;
 
-namespace DupFind.App;
+namespace DupFind.ViewModels;
 
 /// <summary>Human-readable byte sizes for the UI.</summary>
 public static class Format

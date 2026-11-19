@@ -1,7 +1,6 @@
 using System.IO;
-using DupFind.App.Mvvm;
 
-namespace DupFind.App.ViewModels;
+namespace DupFind.ViewModels;
 
 /// <summary>One file within a duplicate group.</summary>
 public sealed class DuplicateFileViewModel : ObservableObject

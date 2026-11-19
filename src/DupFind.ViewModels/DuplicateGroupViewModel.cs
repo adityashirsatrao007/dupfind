@@ -1,9 +1,8 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using DupFind.App.Mvvm;
 using DupFind.Core;
 
-namespace DupFind.App.ViewModels;
+namespace DupFind.ViewModels;
 
 /// <summary>A set of identical files, with per-file selection state.</summary>
 public sealed class DuplicateGroupViewModel : ObservableObject
