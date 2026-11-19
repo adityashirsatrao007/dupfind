@@ -57,9 +57,9 @@ public sealed class DuplicateGroupViewModel : ObservableObject
     }
 
     /// <summary>Drops files that were already moved to the quarantine folder.</summary>
-    public void RemoveMovedFiles()
+    public void RemoveFiles(IReadOnlyCollection<DuplicateFileViewModel> removed)
     {
-        foreach (var file in Files.Where(f => f.IsSelected).ToList())
+        foreach (var file in removed)
         {
             file.PropertyChanged -= OnFilePropertyChanged;
             Files.Remove(file);

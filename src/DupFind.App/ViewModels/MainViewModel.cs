@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Windows;
 using DupFind.App.Mvvm;
+using DupFind.App.Services;
 using DupFind.Core;
 using Microsoft.Win32;
 
@@ -21,13 +23,17 @@ public sealed class MainViewModel : ObservableObject
         RemoveFolderCommand = new RelayCommand(RemoveFolder, () => !IsBusy && SelectedFolder is not null);
         KeepNewestCommand = new RelayCommand(KeepNewest, () => Groups.Count > 0 && !IsBusy);
         ClearSelectionCommand = new RelayCommand(ClearSelection, () => Groups.Count > 0);
-        MoveSelectedCommand = new RelayCommand(MoveSelected, () => SelectedCount > 0 && !IsBusy);
+        MoveSelectedCommand = new AsyncRelayCommand(MoveSelectedAsync, () => SelectedCount > 0 && !IsBusy);
         ExportCsvCommand = new RelayCommand(ExportCsv, () => Groups.Count > 0);
+        ShowSkippedCommand = new RelayCommand(ShowSkipped, () => SkippedFiles.Count > 0);
     }
 
     public ObservableCollection<string> Folders { get; } = [];
 
     public ObservableCollection<DuplicateGroupViewModel> Groups { get; } = [];
+
+    /// <summary>Files and folders the scan could not read, so the user can act on them.</summary>
+    public ObservableCollection<string> SkippedFiles { get; } = [];
 
     public AsyncRelayCommand ScanCommand { get; }
 
@@ -41,9 +47,11 @@ public sealed class MainViewModel : ObservableObject
 
     public RelayCommand ClearSelectionCommand { get; }
 
-    public RelayCommand MoveSelectedCommand { get; }
+    public AsyncRelayCommand MoveSelectedCommand { get; }
 
     public RelayCommand ExportCsvCommand { get; }
+
+    public RelayCommand ShowSkippedCommand { get; }
 
     private string? _selectedFolder;
 
@@ -126,6 +134,7 @@ public sealed class MainViewModel : ObservableObject
     private async Task ScanAsync()
     {
         Groups.Clear();
+        SkippedFiles.Clear();
         SelectedFolder = null;
         Progress = 0;
         IsBusy = true;
@@ -149,9 +158,12 @@ public sealed class MainViewModel : ObservableObject
                 Groups.Add(vm);
             }
 
+            foreach (var error in result.Errors)
+                SkippedFiles.Add(error);
+
             var skipped = result.Errors.Count == 0
                 ? string.Empty
-                : $" {result.Errors.Count:N0} item(s) skipped (locked or unreadable).";
+                : $" {result.Errors.Count:N0} item(s) skipped (locked or unreadable) — see Skipped files.";
 
             Status = Groups.Count == 0
                 ? "No duplicates found." + skipped
@@ -164,6 +176,7 @@ public sealed class MainViewModel : ObservableObject
         catch (Exception ex)
         {
             // Never let an unexpected failure take the window down.
+            ErrorLog.Write(ex, "scan");
             Status = $"Scan failed: {ex.Message}";
         }
         finally
@@ -174,6 +187,19 @@ public sealed class MainViewModel : ObservableObject
             IsBusy = false;
             OnGroupSelectionChanged(this, EventArgs.Empty);
         }
+    }
+
+    private void ShowSkipped()
+    {
+        const int shown = 50;
+        var lines = SkippedFiles.Take(shown).ToList();
+        var more = SkippedFiles.Count > shown ? $"\n\n…and {SkippedFiles.Count - shown:N0} more." : string.Empty;
+
+        MessageBox.Show(
+            string.Join('\n', lines) + more,
+            $"{SkippedFiles.Count:N0} skipped item(s)",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private void KeepNewest()
@@ -192,21 +218,20 @@ public sealed class MainViewModel : ObservableObject
         OnGroupSelectionChanged(this, EventArgs.Empty);
     }
 
-    private void MoveSelected()
+    private async Task MoveSelectedAsync()
     {
         var selected = Groups.SelectMany(g => g.SelectedFiles).ToList();
         if (selected.Count == 0)
             return;
 
-        var dialog = new OpenFolderDialog { Title = "Choose a folder to move duplicates into" };
-        if (dialog.ShowDialog() != true)
+        var picker = new OpenFolderDialog { Title = "Choose a folder to move duplicates into" };
+        if (picker.ShowDialog() != true)
             return;
 
-        var target = dialog.FolderName;
-        var total = selected.Sum(f => f.Size);
+        var target = picker.FolderName;
 
         var confirmed = MessageBox.Show(
-            $"Move {selected.Count:N0} file(s), {Format.Bytes(total)}, into:\n\n{target}\n\n" +
+            $"Move {selected.Count:N0} file(s), {Format.Bytes(selected.Sum(f => f.Size))}, into:\n\n{target}\n\n" +
             "These files are moved rather than deleted, so the operation can be undone from that folder.",
             "Move duplicates",
             MessageBoxButton.OKCancel,
@@ -215,36 +240,96 @@ public sealed class MainViewModel : ObservableObject
         if (confirmed != MessageBoxResult.OK)
             return;
 
-        var moved = 0;
-        string? firstFailure = null;
+        IsBusy = true;
+        Progress = 0;
+        _cancellation = new CancellationTokenSource();
 
-        foreach (var file in selected)
+        // Written only by the worker loop; read after it finishes. await supplies the barrier.
+        var movedFiles = new List<DuplicateFileViewModel>();
+        var failures = new List<string>();
+
+        var progress = new Progress<int>(done =>
         {
+            Progress = 100.0 * done / selected.Count;
+            Status = $"Moving {done:N0} of {selected.Count:N0} file(s)…";
+        });
+
+        try
+        {
+            await Task.Run(
+                () => MoveFiles(selected, target, progress, _cancellation.Token, movedFiles, failures),
+                _cancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Status = "Move cancelled.";
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.Write(ex, "move");
+            failures.Add(ex.Message);
+        }
+        finally
+        {
+            _cancellation.Dispose();
+            _cancellation = null;
+            Progress = 0;
+            IsBusy = false;
+        }
+
+        // Files already moved must leave the grid even if the run was cancelled.
+        if (movedFiles.Count > 0)
+            RemoveMoved(movedFiles);
+
+        if (movedFiles.Count > 0 || failures.Count > 0)
+        {
+            Status = $"{movedFiles.Count:N0} file(s) moved to {target}."
+                     + (failures.Count == 0 ? string.Empty : $" {failures.Count} failed — first: {failures[0]}");
+        }
+
+        OnGroupSelectionChanged(this, EventArgs.Empty);
+    }
+
+    private static void MoveFiles(
+        List<DuplicateFileViewModel> files,
+        string target,
+        IProgress<int> progress,
+        CancellationToken token,
+        List<DuplicateFileViewModel> movedFiles,
+        List<string> failures)
+    {
+        var moved = 0;
+
+        foreach (var file in files)
+        {
+            token.ThrowIfCancellationRequested();
+
             try
             {
                 File.Move(file.Path, UniqueDestination(target, file.Path));
+                movedFiles.Add(file);
                 moved++;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                firstFailure ??= $"{Path.GetFileName(file.Path)}: {ex.Message}";
+                failures.Add($"{Path.GetFileName(file.Path)}: {ex.Message}");
             }
-        }
 
+            progress.Report(moved);
+        }
+    }
+
+    private void RemoveMoved(List<DuplicateFileViewModel> movedFiles)
+    {
         foreach (var group in Groups.ToList())
         {
-            group.RemoveMovedFiles();
+            group.RemoveFiles(movedFiles);
             if (group.IsDuplicate)
                 continue;
 
             group.SelectionChanged -= OnGroupSelectionChanged;
             Groups.Remove(group);
         }
-
-        Status = $"{moved:N0} file(s) moved to {target}."
-                 + (firstFailure is null ? string.Empty : $" Some failed — {firstFailure}");
-
-        OnGroupSelectionChanged(this, EventArgs.Empty);
     }
 
     private void ExportCsv()
@@ -325,5 +410,6 @@ public sealed class MainViewModel : ObservableObject
         ClearSelectionCommand.RaiseCanExecuteChanged();
         MoveSelectedCommand.RaiseCanExecuteChanged();
         ExportCsvCommand.RaiseCanExecuteChanged();
+        ShowSkippedCommand.RaiseCanExecuteChanged();
     }
 }
