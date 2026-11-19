@@ -61,16 +61,22 @@ src/
   DupFind.Core/          scanning engine — net8.0, no UI types, fully testable
     DuplicateFinder.cs   enumeration, size pass, parallel SHA-256 pass
     Models.cs            ScanProgress, DuplicateGroup, ScanResult
+  DupFind.ViewModels/    presentation rules — net8.0, no WPF, testable on any OS
+    DuplicateGroupViewModel.cs  KeepNewest, group resolution, header text
+    DuplicateFileViewModel.cs   one file and its selection state
+    Format.cs                   byte sizes for the UI
   DupFind.App/           WPF UI — net8.0-windows
-    ViewModels/          MainViewModel, DuplicateGroupViewModel, DuplicateFileViewModel
-    Mvvm/                ObservableObject, RelayCommand, AsyncRelayCommand
-    MainWindow.xaml      folders, toolbar, grouped results, status bar
+    ViewModels/          MainViewModel: commands, dialogs, progress
+    Mvvm/                RelayCommand, AsyncRelayCommand
+    MainWindow.xaml      folders, toolbar, virtualized grouped results, status bar
 tests/
-  DupFind.Core.Tests/    xUnit, runs on any OS
+  DupFind.Core.Tests/         xUnit, runs on any OS
+  DupFind.ViewModels.Tests/   xUnit, runs on any OS
 ```
 
-`DupFind.Core` is deliberately OS-agnostic. All nine tests run on Linux and Windows, which
-is why the engine can be verified in CI without a desktop session.
+`DupFind.Core` and `DupFind.ViewModels` are deliberately OS-agnostic, so all 25 tests run on
+Linux and Windows. That split is what makes the presentation rules testable: a WPF test needs a
+desktop session, an `INotifyPropertyChanged` test does not.
 
 ## Operational behaviour
 
@@ -80,8 +86,20 @@ is why the engine can be verified in CI without a desktop session.
   not read: locked file, permission denied, disconnected drive.
 - **Unexpected errors are logged** to `%AppData%\DupFind\crash.log` and surfaced in a dialog,
   so a failure never closes the window silently.
+- **Results virtualize.** The results list is a `ListBox` with a recycling
+  `VirtualizingStackPanel`, and a finished scan is published to the grid in a single
+  assignment. A 100 000-file scan therefore costs one layout pass and about a screenful of
+  controls, instead of 200 000 controls and a frozen window.
 - **No single-instance guard** — two copies can run at once. Unlike ExpenseLog there is no
   shared mutable state, so this is harmless today.
+
+## Download and run
+
+Every push to `main` publishes a single self-contained `DupFind.exe` for `win-x64`. The .NET
+runtime is bundled, so nothing needs to be installed first. Download it from the artifacts of
+the latest green run: **Actions → the newest `build` run → Artifacts → `DupFind-win-x64`**.
+
+The executable is unsigned, so SmartScreen warns on first launch: *More info → Run anyway*.
 
 ## Build and run
 
@@ -98,12 +116,18 @@ Run the tests:
 dotnet test
 ```
 
-The app runs as a framework-dependent `win-x64` build; CI publishes it on every push and
-attaches the output as the `DupFind-win-x64` artifact. To build a standalone folder:
+CI publishes the self-contained single file on every push and attaches it as the
+`DupFind-win-x64` artifact. To reproduce it locally:
 
 ```powershell
-dotnet publish src/DupFind.App/DupFind.App.csproj -c Release -r win-x64 --self-contained false -o publish
+dotnet publish src/DupFind.App/DupFind.App.csproj -c Release -r win-x64 `
+  --self-contained true -p:PublishSingleFile=true `
+  -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true `
+  -p:DebugType=embedded -o publish
 ```
+
+`DebugType=embedded` keeps stack traces in `crash.log` readable without shipping a second file,
+and the CI step *Verify single-file output* fails the build if single-file ever stops applying.
 
 ## Tests
 
@@ -119,13 +143,28 @@ dotnet publish src/DupFind.App/DupFind.App.csproj -c Release -r win-x64 --self-c
 | `ProgressEndsAtOneHundredPercent` | Progress reporting counts candidates, not all files |
 | `ScanResultReclaimableBytesIgnoresTheLastCopy` | You can't reclaim the copy you keep |
 
+Presentation rules (`DupFind.ViewModels.Tests`, 16 cases, no desktop session required):
+
+| Test | What it guards |
+| --- | --- |
+| `KeepNewest_selects_every_copy_except_the_most_recently_written` | The bulk action's whole contract |
+| `KeepNewest_never_selects_the_only_newest_file_when_timestamps_tie` | Equal timestamps still keep exactly one copy |
+| `ClearSelection_deselects_everything` | *Deselect all* really clears |
+| `Selecting_a_copy_raises_selection_changed` | The toolbar selection counter updates |
+| `RemoveFiles_reports_the_group_as_resolved_below_two_copies` | Moved rows leave the list |
+| `RemoveFiles_leaves_a_still_duplicated_group_flagged` | A partially moved group stays visible |
+| `Header_reports_copies_reclaimed_bytes_and_folder` | The expander header |
+| `SelectedFiles_returns_only_the_ticked_copies` | What *Move selected…* acts on |
+| `Bytes_*` (3 cases) | Size text, unit selection, sign |
+
 ## What I'd do next
 
 - Partial-hash pre-check (first 4 KB, then full hash) to cut I/O on large media files
 - A scan cache keyed by `(path, size, last write time)` so repeat scans skip unchanged files
 - Multi-select with Shift-click in the results list
 - Move-to-quarantine as a single transaction, so a mid-run failure can be rolled back
-- Extract `IDialogService` and unit-test `MainViewModel` selection logic
+- Extract `IDialogService` so `MainViewModel` itself — commands, progress, cancellation —
+  becomes testable; today only the group and file view models are
 
 ## License
 
